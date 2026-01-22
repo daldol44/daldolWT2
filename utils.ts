@@ -4,8 +4,8 @@ export const START_HOUR = 9;
 export const END_HOUR = 23;
 export const HOURS = Array.from({ length: END_HOUR - START_HOUR + 1 }, (_, i) => START_HOUR + i);
 
-// Significantly increased height for readability (was 160)
-export const PIXELS_PER_HOUR = 240; 
+// Significantly increased height for readability and to prevent content clipping (was 240)
+export const PIXELS_PER_HOUR = 300; 
 export const PIXELS_PER_MINUTE = PIXELS_PER_HOUR / 60;
 
 // Convert "HH:MM" string to minutes from START_HOUR (9:00)

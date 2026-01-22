@@ -52,25 +52,25 @@ const getSubjectStyles = (type: SubjectType) => {
 const getBookVisuals = (book: BookType, desc: string) => {
   if (book === 'A') {
     return (
-      <div className="flex items-center justify-center w-8 h-8 rounded-full bg-[#D50000] border-[3px] border-white shadow-md text-white font-black text-lg z-10 shrink-0">
+      <div className="flex items-center justify-center w-6 h-6 rounded-full bg-[#D50000] border-[2px] border-white shadow-sm text-white font-black text-sm z-10 shrink-0">
         A
       </div>
     );
   } else if (book === 'B') {
     return (
-      <div className="flex items-center justify-center w-8 h-8 bg-[#2962FF] border-[3px] border-white shadow-md text-white font-black text-lg z-10 shrink-0 transform rotate-6">
+      <div className="flex items-center justify-center w-6 h-6 bg-[#2962FF] border-[2px] border-white shadow-sm text-white font-black text-sm z-10 shrink-0 transform rotate-6">
         B
       </div>
     );
   } else if (desc.includes('문풀')) {
     return (
-      <div className="flex items-center justify-center px-2 py-1 bg-slate-900 text-white font-black text-sm rounded shadow-md shrink-0 border-2 border-white min-w-max">
+      <div className="flex items-center justify-center px-1.5 py-0.5 bg-slate-900 text-white font-black text-[11px] rounded shadow-sm shrink-0 border border-white min-w-max">
         문풀
       </div>
     );
   } else if (desc.includes('입시')) {
     return (
-       <div className="flex items-center justify-center px-2 py-1 bg-violet-800 text-white font-black text-sm rounded shadow-md shrink-0 border-2 border-white min-w-max">
+       <div className="flex items-center justify-center px-1.5 py-0.5 bg-violet-800 text-white font-black text-[11px] rounded shadow-sm shrink-0 border border-white min-w-max">
         입시
       </div>
     );
@@ -81,13 +81,13 @@ const getBookVisuals = (book: BookType, desc: string) => {
 // Teacher Styles
 const getTeacherStyle = (name: string) => {
   const short = getTeacherShortName(name);
-  const common = "border-2 border-white shadow-md shrink-0"; // Added shrink-0
+  const common = "border border-white shadow-sm shrink-0"; 
   if (name.includes('달돌')) return { short, container: `bg-[#304FFE] rounded-full ${common}`, text: 'text-white' };
   if (name.includes('산하')) return { short, container: `bg-[#00C853] rounded-lg transform rotate-3 ${common}`, text: 'text-white' }; 
   if (name.includes('지수')) return { short, container: `bg-[#D500F9] rounded-xl ${common}`, text: 'text-white' };
   if (name.includes('예림')) return { short, container: `bg-[#FF6D00] rounded-[35%] ${common}`, text: 'text-white' };
-  if (name.includes('기현') || name.includes('규현')) return { short, container: `bg-[#0091EA] rounded-tl-xl rounded-br-xl ${common}`, text: 'text-white' };
-  if (name.includes('준영') || name.includes('주영')) return { short, container: `bg-[#6200EA] rounded-t-xl ${common}`, text: 'text-white' };
+  if (name.includes('기현') || name.includes('규현')) return { short, container: `bg-[#0091EA] rounded-tl-lg rounded-br-lg ${common}`, text: 'text-white' };
+  if (name.includes('준영') || name.includes('주영')) return { short, container: `bg-[#6200EA] rounded-t-lg ${common}`, text: 'text-white' };
   return { short, container: `bg-slate-700 rounded ${common}`, text: 'text-white' };
 };
 
@@ -102,9 +102,9 @@ const ClassCard: React.FC<ClassCardProps> = ({ session }) => {
       className={`
         w-full h-full
         flex flex-col
-        ${styles.bg} border-[4px] ${styles.border}
-        rounded-xl
-        shadow-md transition-all
+        ${styles.bg} border-[3px] ${styles.border}
+        rounded-lg
+        shadow-sm transition-all
         overflow-hidden relative
       `}
     >
@@ -112,62 +112,57 @@ const ClassCard: React.FC<ClassCardProps> = ({ session }) => {
       <div className="absolute inset-0 opacity-100 pointer-events-none" style={styles.pattern}></div>
 
       {/* Content */}
-      <div className="relative z-10 flex flex-col h-full p-2.5 gap-2">
+      <div className="relative z-10 flex flex-col h-full p-1.5 gap-1">
         
         {/* ROW 1: Time Capsule & Branch */}
-        <div className="flex justify-between items-center gap-1">
+        <div className="flex justify-between items-center gap-1 shrink-0">
            {/* Time Capsule */}
            <div className={`
-             flex items-center justify-center px-4 py-1.5 rounded-full shadow-md border-2 border-white shrink-0
+             flex items-center justify-center px-2 py-0.5 rounded-full shadow-sm border border-white shrink-0
              ${styles.timeBg}
            `}>
-              <span className="text-white text-[16px] font-black leading-none tracking-tight whitespace-nowrap">
-                {session.startTime} ~ {session.endTime}
+              <span className="text-white text-[13px] font-black leading-none tracking-tight whitespace-nowrap">
+                {session.startTime}~{session.endTime}
               </span>
            </div>
 
-           {/* Branch Icon - shrink-0 critical to prevent clipping */}
-           <div className="bg-white/95 p-1.5 rounded-full border-2 border-black/10 shadow-md shrink-0">
+           {/* Branch Icon */}
+           <div className="bg-white/95 p-0.5 rounded-full border border-black/10 shadow-sm shrink-0">
               {isInchang 
-                ? <i className="fa-solid fa-clover text-[#00E676] text-2xl drop-shadow-sm stroke-black"></i>
-                : <i className="fa-solid fa-star text-[#FFD600] text-2xl drop-shadow-sm stroke-black"></i>
+                ? <i className="fa-solid fa-clover text-[#00E676] text-lg drop-shadow-sm stroke-black"></i>
+                : <i className="fa-solid fa-star text-[#FFD600] text-lg drop-shadow-sm stroke-black"></i>
               }
            </div>
         </div>
 
-        {/* ROW 2: Subject & Book Type - CHANGED LAYOUT to allow wrapping/stacking */}
-        {/* Using flex-col to stack Badge and Title vertically if needed, but with wide width they might just sit naturally. 
-            User request: "A [newline] Subject" if space is tight.
-            To guarantee NO truncation, I will use flex-col items-start.
-        */}
-        <div className="flex flex-col items-start gap-1 mt-0 bg-white/80 p-2 rounded-xl backdrop-blur-sm border border-black/5 shadow-sm min-h-min">
-          <div className="shrink-0">{bookVisual}</div>
-          <div className="flex flex-col leading-none w-full">
-             {/* break-keep ensures Korean words don't split in middle. whitespace-normal allows wrapping. */}
-             <span className={`text-[24px] font-black tracking-tighter whitespace-normal break-keep leading-tight ${styles.text}`}>
+        {/* ROW 2: Subject & Book Type */}
+        <div className="flex flex-col items-start gap-0.5 bg-white/80 p-1.5 rounded-lg backdrop-blur-sm border border-black/5 shadow-sm shrink-0 min-h-min">
+          <div className="flex items-center gap-1.5 w-full">
+             <div className="shrink-0">{bookVisual}</div>
+             <span className={`text-[19px] font-black tracking-tighter whitespace-normal break-keep leading-none ${styles.text}`}>
                {session.subject}
              </span>
-             {session.description && session.book === 'None' && (
-                <span className="text-[14px] font-bold text-slate-600 mt-1 whitespace-normal break-keep">
-                  {session.description}
-                </span>
-             )}
           </div>
+           {session.description && session.book === 'None' && (
+              <span className="text-[11px] font-bold text-slate-600 leading-tight whitespace-normal break-keep pl-0.5">
+                {session.description}
+              </span>
+           )}
         </div>
 
         {/* ROW 3: Student List (Expanded Area) */}
-        <div className="flex-1 bg-white/60 rounded-xl border border-black/5 p-2 overflow-hidden mt-0">
-           <div className="flex flex-wrap gap-x-1 gap-y-1.5 content-start">
+        <div className="flex-1 bg-white/60 rounded-lg border border-black/5 p-1 overflow-hidden min-h-0">
+           <div className="flex flex-wrap gap-1 content-start h-full">
              {session.students.length > 0 ? (
                session.students.map((studentStr, idx) => {
                  const [name, clinic] = studentStr.split('\n');
                  return (
-                   <div key={idx} className="flex flex-col items-center justify-center bg-black/5 rounded-md px-1.5 py-0.5 border border-black/5">
-                     <span className="text-[16px] font-bold text-black leading-tight whitespace-nowrap">
+                   <div key={idx} className="flex flex-col items-center justify-center bg-white/60 rounded px-1.5 py-0.5 border border-black/5 shadow-sm shrink-0">
+                     <span className="text-[12px] font-bold text-black leading-none whitespace-nowrap">
                        {name}
                      </span>
                      {clinic && (
-                       <span className="text-[12px] font-bold text-red-600 leading-none whitespace-nowrap mt-0.5">
+                       <span className="text-[10px] font-bold text-red-600 leading-none whitespace-nowrap mt-0.5">
                          {clinic}
                        </span>
                      )}
@@ -175,18 +170,18 @@ const ClassCard: React.FC<ClassCardProps> = ({ session }) => {
                  );
                })
              ) : (
-               <span className="text-[13px] text-slate-400 font-medium pl-1">-</span>
+               <span className="text-[11px] text-slate-400 font-medium pl-1">-</span>
              )}
            </div>
         </div>
 
-        {/* ROW 4: Teacher Badge (Large Shape) */}
-        <div className="flex-shrink-0 flex justify-end mt-auto pt-1">
+        {/* ROW 4: Teacher Badge */}
+        <div className="flex-shrink-0 flex justify-end mt-auto pt-0.5">
           <div className={`
-            w-12 h-12 flex items-center justify-center shrink-0
+            w-8 h-8 flex items-center justify-center shrink-0
             ${teacherStyle.container}
           `}>
-             <span className={`text-[24px] font-black ${teacherStyle.text}`}>
+             <span className={`text-[15px] font-black ${teacherStyle.text}`}>
                {teacherStyle.short}
              </span>
           </div>
