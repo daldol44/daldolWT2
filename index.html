@@ -1,43 +1,734 @@
-<!DOCTYPE html>
-<html lang="ko">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>2026 Winter Integrated Timetable</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-      @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap');
-      body {
-        font-family: 'Noto Sans KR', sans-serif;
-        /* Enable printing background colors */
-        -webkit-print-color-adjust: exact;
-        print-color-adjust: exact;
-      }
-      /* Hide scrollbars for cleaner print/view */
-      ::-webkit-scrollbar {
-        width: 6px;
-        height: 6px;
-      }
-      ::-webkit-scrollbar-track {
-        background: transparent;
-      }
-      ::-webkit-scrollbar-thumb {
-        background: #cbd5e1;
-        border-radius: 3px;
-      }
-    </style>
-  <script type="importmap">
-{
-  "imports": {
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "react": "https://esm.sh/react@^19.2.3"
-  }
+import React, { useState, useMemo } from 'react';
+
+// ----------------------------------------------------------------------
+// 1. TYPES
+// ----------------------------------------------------------------------
+export type Branch = 'inchang' | 'dasan';
+export type DayOfWeek = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+export type SubjectType = 'phy' | 'chem' | 'life' | 'earth' | 'integ' | 'mid' | 'career';
+export type BookType = 'A' | 'B' | 'None';
+
+export interface ClassSession {
+  id: string;
+  day: DayOfWeek;
+  startTime: string; // "HH:MM"
+  endTime: string;   // "HH:MM"
+  branch: Branch;
+  subject: string;
+  description: string;
+  subjectType: SubjectType;
+  book: BookType;
+  teacher: string;
+  students: string[];
 }
-</script>
-</head>
-  <body>
-    <div id="root"></div>
-  </body>
-</html>
+
+// ----------------------------------------------------------------------
+// 2. UTILS & ALGORITHM
+// ----------------------------------------------------------------------
+
+export const START_HOUR = 9;
+export const END_HOUR = 23;
+export const HOURS = Array.from({ length: END_HOUR - START_HOUR + 1 }, (_, i) => START_HOUR + i);
+
+// Significantly increased height for readability (was 160)
+export const PIXELS_PER_HOUR = 240; 
+export const PIXELS_PER_MINUTE = PIXELS_PER_HOUR / 60;
+
+// Convert "HH:MM" string to minutes from START_HOUR (9:00)
+export const getMinutesFromStart = (time: string): number => {
+  const [h, m] = time.split(':').map(Number);
+  return (h - START_HOUR) * 60 + m;
+};
+
+export const getHour = (time: string): number => {
+  const [h] = time.split(':').map(Number);
+  return h;
+};
+
+// Calculate duration in minutes
+export const getDurationMinutes = (start: string, end: string): number => {
+  const startM = getMinutesFromStart(start);
+  const endM = getMinutesFromStart(end);
+  return endM - startM;
+};
+
+export const getTeacherShortName = (name: string): string => {
+  if (!name) return '';
+  return name.charAt(0);
+};
+
+// Layout Algorithm for overlapping events
+export interface LayoutEvent extends ClassSession {
+  top: number;
+  height: number;
+  left: number;
+  width: number;
+  colIndex: number;
+}
+
+export const calculateLayout = (events: ClassSession[]): LayoutEvent[] => {
+  // 1. Sort by start time, then duration (desc)
+  const sorted = [...events].sort((a, b) => {
+    const startA = getMinutesFromStart(a.startTime);
+    const startB = getMinutesFromStart(b.startTime);
+    if (startA !== startB) return startA - startB;
+    return getDurationMinutes(b.startTime, b.endTime) - getDurationMinutes(a.startTime, a.endTime);
+  });
+
+  // 2. Assign horizontal slots
+  const columns: LayoutEvent[][] = [];
+  const result: LayoutEvent[] = [];
+
+  sorted.forEach(ev => {
+    const top = getMinutesFromStart(ev.startTime) * PIXELS_PER_MINUTE;
+    
+    // Force minimum height of 200px
+    const rawHeight = getDurationMinutes(ev.startTime, ev.endTime) * PIXELS_PER_MINUTE;
+    const height = Math.max(rawHeight, 200); 
+    
+    // Find first column where this event doesn't overlap with existing last event
+    let colIndex = 0;
+    while (true) {
+      if (!columns[colIndex]) {
+        columns[colIndex] = [];
+        break;
+      }
+      
+      // Check overlap using the FORCED height to prevent visual overlap
+      const hasOverlap = columns[colIndex].some(placed => {
+        const placedEnd = placed.top + placed.height; // placed.height is already min-200
+        const thisEnd = top + height;
+        
+        // Simple 1D interval intersection check
+        return (top < placedEnd && thisEnd > placed.top);
+      });
+
+      if (!hasOverlap) break;
+      colIndex++;
+    }
+
+    const layoutEvent = { ...ev, top, height, left: 0, width: 0, colIndex };
+    columns[colIndex].push(layoutEvent);
+    result.push(layoutEvent);
+  });
+
+  // 3. Group concurrent events to determine widths
+  result.forEach(ev => {
+    // Check overlap with the FORCED height
+    const overlapping = result.filter(other => 
+      other.id !== ev.id && 
+      !(other.top >= ev.top + ev.height || other.top + other.height <= ev.top)
+    );
+    
+    let maxCol = ev.colIndex;
+    overlapping.forEach(o => maxCol = Math.max(maxCol, o.colIndex));
+    
+    const totalCols = maxCol + 1;
+    
+    ev.width = 100 / totalCols;
+    ev.left = ev.colIndex * ev.width;
+  });
+
+  return result;
+};
+
+// ----------------------------------------------------------------------
+// 3. DATA
+// ----------------------------------------------------------------------
+// Added "(심화보충)" tag to students not present in the provided attendance snippet.
+// Present in snippet: 강다정, 강다현, 강두의, 강민서, 함지영, 황지민
+// Others marked as (심화보충).
+
+export const RAW_DATA: ClassSession[] = [
+  // ================= INCHANG BRANCH (인창관) =================
+  { id: 'i-1', day: 'mon', startTime: '16:00', endTime: '17:30', branch: 'inchang', subject: '중3', description: '8주A', subjectType: 'mid', book: 'A', teacher: '달돌', students: ['임하윤 (심화보충)\n(수3-6)'] },
+  { id: 'i-2', day: 'mon', startTime: '17:30', endTime: '19:00', branch: 'inchang', subject: '중3', description: '8주B', subjectType: 'mid', book: 'B', teacher: '달돌', students: ['임하윤 (심화보충)\n(수3-6)'] },
+  { id: 'i-3', day: 'tue', startTime: '11:30', endTime: '13:00', branch: 'inchang', subject: '중3', description: '8주A', subjectType: 'mid', book: 'A', teacher: '달돌', students: ['방지율 (심화보충)', '윤성민 (심화보충)\n(금11-1)', '이서혜 (심화보충)'] },
+  { id: 'i-4', day: 'tue', startTime: '13:00', endTime: '14:30', branch: 'inchang', subject: '중3', description: '8주B', subjectType: 'mid', book: 'B', teacher: '달돌', students: ['방지율 (심화보충)', '윤성민 (심화보충)\n(금11-1)', '이서혜 (심화보충)'] },
+  { id: 'i-5', day: 'tue', startTime: '19:00', endTime: '20:30', branch: 'inchang', subject: '중1', description: '8주A', subjectType: 'mid', book: 'A', teacher: '준영', students: ['이지혁 (심화보충)'] },
+  { id: 'i-6', day: 'tue', startTime: '20:30', endTime: '22:00', branch: 'inchang', subject: '중1', description: '8주B', subjectType: 'mid', book: 'B', teacher: '지수', students: ['이지혁 (심화보충)'] },
+  { id: 'i-7', day: 'fri', startTime: '18:30', endTime: '20:00', branch: 'inchang', subject: '중3', description: '8주A', subjectType: 'mid', book: 'A', teacher: '달돌', students: ['구하린 (심화보충)\n(수5-7)'] },
+  { id: 'i-8', day: 'fri', startTime: '20:00', endTime: '21:30', branch: 'inchang', subject: '중3', description: '8주B', subjectType: 'mid', book: 'B', teacher: '달돌', students: ['구하린 (심화보충)\n(수5-7)'] },
+  { id: 'i-9', day: 'fri', startTime: '20:00', endTime: '21:30', branch: 'inchang', subject: '중2', description: '8주A', subjectType: 'mid', book: 'A', teacher: '달돌', students: ['박준서 (심화보충)'] },
+  { id: 'i-10', day: 'fri', startTime: '21:30', endTime: '23:00', branch: 'inchang', subject: '중2', description: '8주B', subjectType: 'mid', book: 'B', teacher: '규현', students: ['박준서 (심화보충)'] },
+  { id: 'i-11', day: 'sat', startTime: '17:30', endTime: '19:00', branch: 'inchang', subject: '중3', description: '8주A', subjectType: 'mid', book: 'A', teacher: '지수', students: ['강승현 (심화보충)'] },
+  { id: 'i-12', day: 'sat', startTime: '19:00', endTime: '20:30', branch: 'inchang', subject: '중3', description: '8주B', subjectType: 'mid', book: 'B', teacher: '달돌', students: ['강승현 (심화보충)'] },
+  { id: 'i-13', day: 'sun', startTime: '14:00', endTime: '15:30', branch: 'inchang', subject: '중3', description: '8주A', subjectType: 'mid', book: 'A', teacher: '규현', students: ['강두의', '김지수 (심화보충)'] }, // 강두의는 출결 있음
+  { id: 'i-14', day: 'sun', startTime: '15:30', endTime: '17:00', branch: 'inchang', subject: '중3', description: '8주B', subjectType: 'mid', book: 'B', teacher: '규현', students: ['강두의', '김지수 (심화보충)'] },
+  { id: 'i-15', day: 'mon', startTime: '10:30', endTime: '12:00', branch: 'inchang', subject: '생명1', description: '8주A', subjectType: 'life', book: 'A', teacher: '달돌', students: ['김찬율 (심화보충)\n(일4-8)', '임지윤 (심화보충)\n(금2-4)'] },
+  { id: 'i-16', day: 'mon', startTime: '12:00', endTime: '13:30', branch: 'inchang', subject: '생명1', description: '8주B', subjectType: 'life', book: 'B', teacher: '지수', students: ['김찬율 (심화보충)\n(일4-8)', '임지윤 (심화보충)\n(금2-4)'] },
+  { id: 'i-17', day: 'tue', startTime: '14:00', endTime: '15:30', branch: 'inchang', subject: '통합', description: '8주A', subjectType: 'integ', book: 'A', teacher: '지수', students: ['김효린 (심화보충)\n(토11-1)'] },
+  { id: 'i-18', day: 'tue', startTime: '15:30', endTime: '17:00', branch: 'inchang', subject: '통합', description: '8주B', subjectType: 'integ', book: 'B', teacher: '지수', students: ['김효린 (심화보충)\n(토11-1)'] },
+  { id: 'i-19', day: 'tue', startTime: '16:00', endTime: '17:30', branch: 'inchang', subject: '화학1', description: '8주B', subjectType: 'chem', book: 'B', teacher: '지수', students: ['김찬율 (심화보충)\n(일4-8)', '이재영 (심화보충)\n(화2-4/일11-12:30/3:30-4)', '정율하 (심화보충)\n(화7-9/일3:30-5:30)'] },
+  { id: 'i-20', day: 'tue', startTime: '17:30', endTime: '19:00', branch: 'inchang', subject: '화학1', description: '8주A', subjectType: 'chem', book: 'A', teacher: '달돌', students: ['김찬율 (심화보충)\n(일4-8)', '이재영 (심화보충)\n(화2-4/일11-12:30/3:30-4)', '정율하 (심화보충)\n(화7-9/일3:30-5:30)'] },
+  { id: 'i-21', day: 'sat', startTime: '12:30', endTime: '14:00', branch: 'inchang', subject: '화학1', description: '8주A', subjectType: 'chem', book: 'A', teacher: '달돌', students: ['김규리 (심화보충)', '김태우 (심화보충)\n(수3-7)', '이지훈 (심화보충)\n(금8:30-10:30)', '한재이 (심화보충)\n(토3:30-5:30/일3:30-5:30)'] },
+  { id: 'i-22', day: 'sat', startTime: '14:00', endTime: '15:30', branch: 'inchang', subject: '화학1', description: '8주B', subjectType: 'chem', book: 'B', teacher: '지수', students: ['김규리 (심화보충)', '김태우 (심화보충)\n(수3-7)', '이지훈 (심화보충)\n(금8:30-10:30)', '한재이 (심화보충)\n(토3:30-5:30/일3:30-5:30)'] },
+  { id: 'i-23', day: 'sat', startTime: '15:30', endTime: '17:00', branch: 'inchang', subject: '통합', description: '8주A', subjectType: 'integ', book: 'A', teacher: '달돌', students: ['조혜인 (심화보충)\n(일10:30-1:30)', '표은서 (심화보충)\n(일1-3)'] },
+  { id: 'i-24', day: 'sat', startTime: '17:00', endTime: '18:30', branch: 'inchang', subject: '통합', description: '8주B', subjectType: 'integ', book: 'B', teacher: '달돌', students: ['조혜인 (심화보충)\n(일10:30-1:30)', '표은서 (심화보충)\n(일1-3)'] },
+  { id: 'i-25', day: 'sun', startTime: '12:30', endTime: '14:00', branch: 'inchang', subject: '물리1', description: '8주A', subjectType: 'phy', book: 'A', teacher: '달돌', students: ['김목현 (심화보충)', '김태우 (심화보충)\n(수3-7)', '김하율 (심화보충)', '신민승 (심화보충)', '정율하 (심화보충)\n(화7-9/일3:30-5:30)', '한재이 (심화보충)\n(토3:30-5:30/일3:30-5:30)'] },
+  { id: 'i-26', day: 'sun', startTime: '14:00', endTime: '15:30', branch: 'inchang', subject: '물리1', description: '8주B', subjectType: 'phy', book: 'B', teacher: '달돌', students: ['김목현 (심화보충)', '김태우 (심화보충)\n(수3-7)', '신민승 (심화보충)', '정율하 (심화보충)\n(화7-9/일3:30-5:30)', '한재이 (심화보충)\n(토3:30-5:30/일3:30-5:30)'] },
+  { id: 'i-27', day: 'sun', startTime: '15:30', endTime: '17:00', branch: 'inchang', subject: '통합', description: '8주A', subjectType: 'integ', book: 'A', teacher: '달돌', students: ['강다현\n(월3-6)', '김령하 (심화보충)', '김하율 (심화보충)'] }, // 강다현은 출결 있음
+  { id: 'i-28', day: 'sun', startTime: '17:00', endTime: '18:30', branch: 'inchang', subject: '통합', description: '8주B', subjectType: 'integ', book: 'B', teacher: '규현', students: ['강다현\n(월3-6)', '김령하 (심화보충)'] },
+  { id: 'i-29', day: 'sun', startTime: '20:00', endTime: '21:30', branch: 'inchang', subject: '화학진로', description: '8주A', subjectType: 'chem', book: 'A', teacher: '달돌', students: ['강승윤 (심화보충)', '김반석 (심화보충)\n(수4-9:30)'] },
+  { id: 'i-30', day: 'sun', startTime: '21:30', endTime: '23:00', branch: 'inchang', subject: '화학진로', description: '8주B', subjectType: 'chem', book: 'B', teacher: '달돌', students: ['강승윤 (심화보충)', '김반석 (심화보충)\n(수4-9:30)'] },
+  { id: 'i-31', day: 'tue', startTime: '17:30', endTime: '19:00', branch: 'inchang', subject: '통합', description: '문풀', subjectType: 'integ', book: 'None', teacher: '지수', students: ['강유하 (심화보충)\n(화1-3/금6:30-8)'] },
+  { id: 'i-32', day: 'sat', startTime: '15:30', endTime: '17:00', branch: 'inchang', subject: '통합', description: '문풀', subjectType: 'integ', book: 'None', teacher: '달돌', students: [] },
+  { id: 'i-33', day: 'sat', startTime: '16:00', endTime: '17:30', branch: 'inchang', subject: '화학1', description: '문풀', subjectType: 'chem', book: 'None', teacher: '지수', students: ['김반석 (심화보충)\n(수4-9:30)'] },
+  { id: 'i-34', day: 'sat', startTime: '18:30', endTime: '20:00', branch: 'inchang', subject: '물리1', description: '문풀', subjectType: 'phy', book: 'None', teacher: '산하', students: ['강승윤 (심화보충)', '윤성재 (심화보충)\n(화1-4:30)', '전성주 (심화보충)'] },
+  { id: 'i-35', day: 'sat', startTime: '19:30', endTime: '21:00', branch: 'inchang', subject: '통합', description: '문풀', subjectType: 'integ', book: 'None', teacher: '달돌', students: ['신서인 (심화보충)\n(화10:30-2)'] },
+  { id: 'i-36', day: 'sat', startTime: '20:00', endTime: '21:30', branch: 'inchang', subject: '화학1', description: '문풀', subjectType: 'chem', book: 'None', teacher: '산하', students: ['윤성재 (심화보충)\n(화1-4:30)', '이정현 (심화보충)\n(금12-3:30/일3:30-5:30)', '전성주 (심화보충)'] },
+  { id: 'i-37', day: 'tue', startTime: '14:30', endTime: '16:00', branch: 'inchang', subject: '물리1', description: '8주A', subjectType: 'phy', book: 'A', teacher: '달돌', students: ['장윤우 (심화보충)\n(수2-5)'] },
+  { id: 'i-38', day: 'tue', startTime: '16:00', endTime: '17:30', branch: 'inchang', subject: '물리1', description: '8주B', subjectType: 'phy', book: 'B', teacher: '달돌', students: ['장윤우 (심화보충)\n(수2-5)'] },
+  { id: 'i-39', day: 'tue', startTime: '19:00', endTime: '20:30', branch: 'inchang', subject: '생명1', description: '8주A', subjectType: 'life', book: 'A', teacher: '지수', students: ['이예원 (심화보충)\n(일1-4)'] },
+  { id: 'i-40', day: 'tue', startTime: '20:30', endTime: '22:00', branch: 'inchang', subject: '생명1', description: '8주B', subjectType: 'life', book: 'B', teacher: '지수', students: ['이예원 (심화보충)\n(일1-4)'] },
+  { id: 'i-41', day: 'sun', startTime: '17:00', endTime: '18:30', branch: 'inchang', subject: '생명1', description: '8주A', subjectType: 'life', book: 'A', teacher: '달돌', students: ['이채린 (심화보충)'] },
+  { id: 'i-42', day: 'sun', startTime: '18:30', endTime: '20:00', branch: 'inchang', subject: '생명1', description: '8주B', subjectType: 'life', book: 'B', teacher: '달돌', students: ['이채린 (심화보충)'] },
+
+  // ================= DASAN BRANCH (다산관) =================
+  { id: 'd-1', day: 'fri', startTime: '17:30', endTime: '19:00', branch: 'dasan', subject: '서삼입시', description: '입시', subjectType: 'mid', book: 'None', teacher: '달돌', students: ['정윤하 (심화보충)'] },
+  { id: 'd-2', day: 'sat', startTime: '17:30', endTime: '19:00', branch: 'dasan', subject: '서삼입시', description: '입시', subjectType: 'mid', book: 'None', teacher: '달돌', students: ['김은재 (심화보충)'] },
+  { id: 'd-3', day: 'tue', startTime: '13:00', endTime: '14:30', branch: 'dasan', subject: '중1', description: '8주A', subjectType: 'mid', book: 'A', teacher: '예림', students: ['이주해 (심화보충)\n(금11-1)'] },
+  { id: 'd-4', day: 'tue', startTime: '14:30', endTime: '16:00', branch: 'dasan', subject: '중1', description: '8주B', subjectType: 'mid', book: 'B', teacher: '기현', students: ['이주해 (심화보충)\n(금11-1)'] },
+  { id: 'd-5', day: 'wed', startTime: '10:30', endTime: '12:00', branch: 'dasan', subject: '중2', description: '8주A', subjectType: 'mid', book: 'A', teacher: '달돌', students: ['박시윤 (심화보충)\n(토11-12)', '오연우 (심화보충)', '윤보민 (심화보충)', '이도명 (심화보충)'] },
+  { id: 'd-6', day: 'wed', startTime: '12:00', endTime: '13:30', branch: 'dasan', subject: '중2', description: '8주B', subjectType: 'mid', book: 'B', teacher: '달돌', students: ['오연우 (심화보충)', '윤보민 (심화보충)', '이도명 (심화보충)'] },
+  { id: 'd-7', day: 'wed', startTime: '14:30', endTime: '16:00', branch: 'dasan', subject: '중2', description: '8주A', subjectType: 'mid', book: 'A', teacher: '산하', students: [] },
+  { id: 'd-8', day: 'thu', startTime: '10:30', endTime: '12:00', branch: 'dasan', subject: '중2', description: '8주A', subjectType: 'mid', book: 'A', teacher: '달돌', students: ['조하빈 (심화보충)\n(화11-1)', '함지영\n(수11-1)'] }, // 함지영 출결 있음
+  { id: 'd-9', day: 'thu', startTime: '12:00', endTime: '13:30', branch: 'dasan', subject: '중2', description: '8주B', subjectType: 'mid', book: 'B', teacher: '달돌', students: ['조하빈 (심화보충)\n(화11-1)', '함지영\n(수11-1)'] },
+  { id: 'd-10', day: 'fri', startTime: '10:00', endTime: '11:30', branch: 'dasan', subject: '중1', description: '8주A', subjectType: 'mid', book: 'A', teacher: '산하', students: [] },
+  { id: 'd-11', day: 'fri', startTime: '11:30', endTime: '13:00', branch: 'dasan', subject: '중1', description: '8주B', subjectType: 'mid', book: 'B', teacher: '산하', students: [] },
+  { id: 'd-12', day: 'sat', startTime: '14:00', endTime: '15:30', branch: 'dasan', subject: '중3', description: '8주A', subjectType: 'mid', book: 'A', teacher: '산하', students: [] },
+  { id: 'd-13', day: 'fri', startTime: '10:30', endTime: '12:00', branch: 'dasan', subject: '중2', description: '8주B', subjectType: 'mid', book: 'B', teacher: '산하', students: [] },
+  { id: 'd-14', day: 'sat', startTime: '15:30', endTime: '17:00', branch: 'dasan', subject: '중3', description: '8주B', subjectType: 'mid', book: 'B', teacher: '예림', students: [] },
+  { id: 'd-15', day: 'fri', startTime: '09:00', endTime: '10:30', branch: 'dasan', subject: '중2', description: '8주A', subjectType: 'mid', book: 'A', teacher: '산하', students: [] },
+  { id: 'd-16', day: 'sat', startTime: '12:00', endTime: '13:30', branch: 'dasan', subject: '중2', description: '8주B', subjectType: 'mid', book: 'B', teacher: '예림', students: ['박시윤 (심화보충)\n(토11-12)'] },
+  { id: 'd-17', day: 'sat', startTime: '14:00', endTime: '15:30', branch: 'dasan', subject: '중1', description: '8주A', subjectType: 'mid', book: 'A', teacher: '예림', students: ['천지아 (심화보충)'] },
+  { id: 'd-18', day: 'sat', startTime: '15:30', endTime: '17:00', branch: 'dasan', subject: '중1', description: '8주B', subjectType: 'mid', book: 'B', teacher: '주영', students: ['천지아 (심화보충)'] },
+  { id: 'd-19', day: 'sat', startTime: '14:00', endTime: '15:30', branch: 'dasan', subject: '중3', description: '8주A', subjectType: 'mid', book: 'A', teacher: '산하', students: ['윤규림 (심화보충)\n(수10-12)'] },
+  { id: 'd-20', day: 'sat', startTime: '15:30', endTime: '17:00', branch: 'dasan', subject: '중3', description: '8주B', subjectType: 'mid', book: 'B', teacher: '예림', students: ['윤규림 (심화보충)\n(수10-12)'] },
+  { id: 'd-21', day: 'sun', startTime: '12:30', endTime: '14:00', branch: 'dasan', subject: '중2', description: '8주B', subjectType: 'mid', book: 'B', teacher: '지수', students: ['이시온 (심화보충)', '이지율 (심화보충)\n(수3-5)'] },
+  { id: 'd-22', day: 'sun', startTime: '14:00', endTime: '15:30', branch: 'dasan', subject: '중2', description: '8주A', subjectType: 'mid', book: 'A', teacher: '예림', students: ['이시온 (심화보충)', '이지율 (심화보충)\n(수3-5)'] },
+  { id: 'd-23', day: 'sun', startTime: '15:30', endTime: '17:00', branch: 'dasan', subject: '중3', description: '8주A', subjectType: 'mid', book: 'A', teacher: '지수', students: ['강다정\n(토5-7)', '한샘이 (심화보충)\n(일3-3:30/6:30-8)'] }, // 강다정 출결 있음
+  { id: 'd-24', day: 'sun', startTime: '17:00', endTime: '18:30', branch: 'dasan', subject: '중3', description: '8주B', subjectType: 'mid', book: 'B', teacher: '산하', students: ['강다정\n(토5-7)', '한샘이 (심화보충)\n(일3-3:30/6:30-8)'] },
+  { id: 'd-25', day: 'mon', startTime: '13:30', endTime: '15:00', branch: 'dasan', subject: '화학1', description: '8주A', subjectType: 'chem', book: 'A', teacher: '달돌', students: ['박정선 (심화보충)\n(금6-8/토11-1)', '신재웅 (심화보충)\n(금1-3/토1-3)', '유은성 (심화보충)\n(수2-6)', '이선재 (심화보충)\n(일10-4)'] },
+  { id: 'd-26', day: 'mon', startTime: '15:00', endTime: '16:30', branch: 'dasan', subject: '화학1', description: '8주B', subjectType: 'chem', book: 'B', teacher: '지수', students: ['박정선 (심화보충)\n(금6-8/토11-1)', '신재웅 (심화보충)\n(금1-3/토1-3)', '유은성 (심화보충)\n(수2-6)', '이선재 (심화보충)\n(일10-4)'] },
+  { id: 'd-27', day: 'mon', startTime: '16:00', endTime: '17:30', branch: 'dasan', subject: '통합', description: '8주A', subjectType: 'integ', book: 'A', teacher: '산하', students: ['노현성 (심화보충)\n(월3:30-7)'] },
+  { id: 'd-28', day: 'mon', startTime: '19:00', endTime: '20:30', branch: 'dasan', subject: '물리진로', description: '8주A', subjectType: 'phy', book: 'A', teacher: '산하', students: ['장연지 (심화보충)\n(화5:30-8:30/토7-10)'] },
+  { id: 'd-29', day: 'mon', startTime: '20:30', endTime: '22:00', branch: 'dasan', subject: '물리진로', description: '8주B', subjectType: 'phy', book: 'B', teacher: '산하', students: ['장연지 (심화보충)\n(화5:30-8:30/토7-10)'] },
+  { id: 'd-30', day: 'mon', startTime: '19:00', endTime: '20:30', branch: 'dasan', subject: '생명1', description: '8주A', subjectType: 'life', book: 'A', teacher: '지수', students: ['강보빈 (심화보충)\n(금4-8)', '김가은 (심화보충)', '박정후 (심화보충)\n(일2-6)'] },
+  { id: 'd-31', day: 'mon', startTime: '20:30', endTime: '22:00', branch: 'dasan', subject: '생명1', description: '8주B', subjectType: 'life', book: 'B', teacher: '지수', students: ['강보빈 (심화보충)\n(금4-8)', '김가은 (심화보충)', '박정후 (심화보충)\n(일2-6)'] },
+  { id: 'd-32', day: 'tue', startTime: '10:30', endTime: '12:00', branch: 'dasan', subject: '통합', description: '8주A', subjectType: 'integ', book: 'A', teacher: '지수', students: ['이소율 (심화보충)\n(월11-1)', '임라희 (심화보충)\n(토1-3)', '정예림 (심화보충)\n(토2-4)'] },
+  { id: 'd-33', day: 'tue', startTime: '12:00', endTime: '13:30', branch: 'dasan', subject: '통합', description: '8주B', subjectType: 'integ', book: 'B', teacher: '지수', students: ['이소율 (심화보충)\n(월11-1)', '임라희 (심화보충)\n(토1-3)', '정예림 (심화보충)\n(토2-4)'] },
+  { id: 'd-34', day: 'tue', startTime: '19:00', endTime: '20:30', branch: 'dasan', subject: '물리1', description: '8주A', subjectType: 'phy', book: 'A', teacher: '달돌', students: ['김지연 (심화보충)\n(화7:30-8:30/일11:30-12:30)', '박정선 (심화보충)\n(금6-8/토11-1)', '최유주 (심화보충)\n(화5-7)'] },
+  { id: 'd-35', day: 'tue', startTime: '20:30', endTime: '22:00', branch: 'dasan', subject: '물리1', description: '8주B', subjectType: 'phy', book: 'B', teacher: '달돌', students: ['박정선 (심화보충)\n(금6-8/토11-1)', '최유주 (심화보충)\n(화5-7)'] },
+  { id: 'd-36', day: 'wed', startTime: '16:00', endTime: '17:30', branch: 'dasan', subject: '물리1', description: '8주B', subjectType: 'phy', book: 'B', teacher: '달돌', students: ['문경서 (심화보충)\n(월4:30-6:30/수2-4)', '이수빈 (심화보충)\n(금10:30-12:30/일3:30-5:30)', '황지민\n(월11-1/화4-6)'] }, // 황지민 출결 있음
+  { id: 'd-37', day: 'wed', startTime: '17:30', endTime: '19:00', branch: 'dasan', subject: '물리1', description: '8주A', subjectType: 'phy', book: 'A', teacher: '산하', students: ['문경서 (심화보충)\n(월4:30-6:30/수2-4)', '이수빈 (심화보충)\n(금10:30-12:30/일3:30-5:30)', '황지민\n(월11-1/화4-6)'] },
+  { id: 'd-38', day: 'wed', startTime: '19:00', endTime: '20:30', branch: 'dasan', subject: '물리진로', description: '8주A', subjectType: 'phy', book: 'A', teacher: '산하', students: ['오성균 (심화보충)\n(수3-6/금12-3/토12-2)'] },
+  { id: 'd-39', day: 'wed', startTime: '20:30', endTime: '22:00', branch: 'dasan', subject: '물리진로', description: '8주B', subjectType: 'phy', book: 'B', teacher: '달돌', students: ['오성균 (심화보충)\n(수3-6/금12-3/토12-2)'] },
+  { id: 'd-40', day: 'wed', startTime: '19:00', endTime: '20:30', branch: 'dasan', subject: '화학진로', description: '8주A', subjectType: 'chem', book: 'A', teacher: '달돌', students: ['박정후 (심화보충)\n(일2-6)', '방지호 (심화보충)\n(토12-2/일10-1)'] },
+  { id: 'd-41', day: 'wed', startTime: '20:30', endTime: '22:00', branch: 'dasan', subject: '화학진로', description: '8주B', subjectType: 'chem', book: 'B', teacher: '산하', students: ['박정후 (심화보충)\n(일2-6)', '방지호 (심화보충)\n(토12-2/일10-1)'] },
+  { id: 'd-42', day: 'fri', startTime: '16:30', endTime: '18:00', branch: 'dasan', subject: '물리1', description: '8주B', subjectType: 'phy', book: 'B', teacher: '달돌', students: ['김단우 (심화보충)\n(수2-6)', '유은성 (심화보충)\n(수2-6)', '이선재 (심화보충)\n(일10-4)', '정해인 (심화보충)'] },
+  { id: 'd-43', day: 'fri', startTime: '18:00', endTime: '19:30', branch: 'dasan', subject: '물리1', description: '8주A', subjectType: 'phy', book: 'A', teacher: '산하', students: ['김단우 (심화보충)\n(수2-6)', '유은성 (심화보충)\n(수2-6)', '이선재 (심화보충)\n(일10-4)', '정해인 (심화보충)'] },
+  { id: 'd-44', day: 'fri', startTime: '17:00', endTime: '18:30', branch: 'dasan', subject: '물리진로', description: '8주A', subjectType: 'phy', book: 'A', teacher: '산하', students: ['전성주 (심화보충)'] },
+  { id: 'd-45', day: 'fri', startTime: '18:30', endTime: '20:00', branch: 'dasan', subject: '물리진로', description: '8주B', subjectType: 'phy', book: 'B', teacher: '기현', students: ['전성주 (심화보충)'] },
+  { id: 'd-46', day: 'sat', startTime: '09:00', endTime: '10:30', branch: 'dasan', subject: '생명1', description: '8주A', subjectType: 'life', book: 'A', teacher: '달돌', students: ['김우영 (심화보충)\n(일10:30-12:30)'] },
+  { id: 'd-47', day: 'sat', startTime: '09:00', endTime: '10:30', branch: 'dasan', subject: '화학1', description: '8주A', subjectType: 'chem', book: 'A', teacher: '산하', students: ['강보빈 (심화보충)\n(금4-8)', '박소은 (심화보충)\n(금1:30-5:30)', '박이레 (심화보충)\n(수5-7)', '신민승 (심화보충)', '이수빈 (심화보충)\n(금10:30-12:30/일3:30-5:30)', '함지민 (심화보충)\n(수11-1)', '황지민\n(월11-1/화4-6)'] },
+  { id: 'd-48', day: 'sat', startTime: '10:30', endTime: '12:00', branch: 'dasan', subject: '화학1', description: '8주B', subjectType: 'chem', book: 'B', teacher: '달돌', students: ['강보빈 (심화보충)\n(금4-8)', '박소은 (심화보충)\n(금1:30-5:30)', '박이레 (심화보충)\n(수5-7)', '신민승 (심화보충)', '이수빈 (심화보충)\n(금10:30-12:30/일3:30-5:30)', '함지민 (심화보충)\n(수11-1)', '황지민\n(월11-1/화4-6)'] },
+  { id: 'd-49', day: 'sat', startTime: '18:00', endTime: '19:30', branch: 'dasan', subject: '화학1', description: '8주A', subjectType: 'chem', book: 'A', teacher: '지수', students: ['정윤주 (심화보충)\n(토5-8)'] },
+  { id: 'd-50', day: 'sat', startTime: '19:30', endTime: '21:00', branch: 'dasan', subject: '화학1', description: '8주B', subjectType: 'chem', book: 'B', teacher: '지수', students: ['정윤주 (심화보충)\n(토5-8)'] },
+  { id: 'd-51', day: 'sun', startTime: '09:00', endTime: '10:30', branch: 'dasan', subject: '생명1', description: '8주B', subjectType: 'life', book: 'B', teacher: '지수', students: ['김우영 (심화보충)\n(일10:30-12:30)'] },
+  { id: 'd-52', day: 'sun', startTime: '12:30', endTime: '14:00', branch: 'dasan', subject: '통합', description: '8주A', subjectType: 'integ', book: 'A', teacher: '지수', students: ['김민기 (심화보충)', '김시연 (심화보충)\n(금1-3)', '이주원 (심화보충)\n(일10:30-12:30)'] },
+  { id: 'd-53', day: 'sun', startTime: '14:00', endTime: '15:30', branch: 'dasan', subject: '통합', description: '8주B', subjectType: 'integ', book: 'B', teacher: '예림', students: ['김민기 (심화보충)', '김시연 (심화보충)\n(금1-3)', '이주원 (심화보충)\n(일10:30-12:30)'] },
+  { id: 'd-54', day: 'sun', startTime: '12:30', endTime: '14:00', branch: 'dasan', subject: '물리1', description: '8주B', subjectType: 'phy', book: 'B', teacher: '산하', students: ['김단희 (심화보충)', '김지연 (심화보충)\n(화7:30-8:30/일11:30-12:30)', '문연수 (심화보충)\n(일10:30-12:30)', '박소은 (심화보충)\n(금1:30-5:30)', '신재웅 (심화보충)\n(금1-3/토1-3)', '이재영 (심화보충)\n(화2-4/일11-12:30/3:30-4)', '이정현 (심화보충)\n(금12-3:30/일3:30-5:30)'] },
+  { id: 'd-55', day: 'sun', startTime: '14:00', endTime: '15:30', branch: 'dasan', subject: '물리1', description: '8주A', subjectType: 'phy', book: 'A', teacher: '산하', students: ['김단희 (심화보충)', '문연수 (심화보충)\n(일10:30-12:30)', '박소은 (심화보충)\n(금1:30-5:30)', '신재웅 (심화보충)\n(금1-3/토1-3)', '이재영 (심화보충)\n(화2-4/일11-12:30/3:30-4)', '이정현 (심화보충)\n(금12-3:30/일3:30-5:30)'] },
+  { id: 'd-56', day: 'sun', startTime: '15:30', endTime: '17:00', branch: 'dasan', subject: '화학1', description: '8주A', subjectType: 'chem', book: 'A', teacher: '산하', students: ['강유빈 (심화보충)\n(화6-8)', '김단우 (심화보충)\n(수2-6)'] },
+  { id: 'd-57', day: 'sun', startTime: '17:00', endTime: '18:30', branch: 'dasan', subject: '화학1', description: '8주B', subjectType: 'chem', book: 'B', teacher: '지수', students: ['강유빈 (심화보충)\n(화6-8)', '김단우 (심화보충)\n(수2-6)'] },
+  { id: 'd-58', day: 'sun', startTime: '19:00', endTime: '20:30', branch: 'dasan', subject: '화학진로', description: '8주A', subjectType: 'chem', book: 'A', teacher: '지수', students: ['강민서\n(수3-7)', '심예지 (심화보충)\n(화1-3)', '장연지 (심화보충)\n(화5:30-8:30/토7-10)'] }, // 강민서 출결 있음
+  { id: 'd-59', day: 'sun', startTime: '20:30', endTime: '22:00', branch: 'dasan', subject: '화학진로', description: '8주B', subjectType: 'chem', book: 'B', teacher: '산하', students: ['강민서\n(수3-7)', '심예지 (심화보충)\n(화1-3)', '장연지 (심화보충)\n(화5:30-8:30/토7-10)'] },
+  { id: 'd-60', day: 'sun', startTime: '19:00', endTime: '20:30', branch: 'dasan', subject: '생명1', description: '8주B', subjectType: 'life', book: 'B', teacher: '산하', students: ['남재우 (심화보충)\n(토9-11)'] },
+  { id: 'd-61', day: 'sun', startTime: '20:30', endTime: '22:00', branch: 'dasan', subject: '생명1', description: '8주A', subjectType: 'life', book: 'A', teacher: '지수', students: ['남재우 (심화보충)\n(토9-11)'] },
+  { id: 'd-62', day: 'mon', startTime: '13:30', endTime: '15:00', branch: 'dasan', subject: '물리1', description: '문풀', subjectType: 'phy', book: 'None', teacher: '산하', students: ['오성균 (심화보충)\n(수3-6/금12-3/토12-2)'] },
+  { id: 'd-63', day: 'mon', startTime: '17:30', endTime: '19:00', branch: 'dasan', subject: '물리1', description: '문풀', subjectType: 'phy', book: 'None', teacher: '산하', students: ['강민서\n(수3-7)'] },
+  { id: 'd-64', day: 'tue', startTime: '16:00', endTime: '17:30', branch: 'dasan', subject: '통합', description: '문풀', subjectType: 'integ', book: 'None', teacher: '기현', students: ['진수민 (심화보충)\n(일12:30-2:30)'] },
+  { id: 'd-65', day: 'wed', startTime: '11:30', endTime: '13:00', branch: 'dasan', subject: '물리1', description: '문풀', subjectType: 'phy', book: 'None', teacher: '산하', students: ['정승우 (심화보충)\n(일2-5)'] },
+  { id: 'd-66', day: 'fri', startTime: '10:30', endTime: '12:00', branch: 'dasan', subject: '화학1', description: '문풀', subjectType: 'chem', book: 'None', teacher: '산하', students: ['문경서 (심화보충)\n(월4:30-6:30/수2-4)', '조은빈 (심화보충)\n(화10-1/금10-10:30/일10:30-12)'] },
+  { id: 'd-67', day: 'fri', startTime: '12:00', endTime: '13:30', branch: 'dasan', subject: '화학1', description: '문풀', subjectType: 'chem', book: 'None', teacher: '산하', students: ['전현준 (심화보충)\n(일9-11)'] },
+  { id: 'd-68', day: 'sat', startTime: '10:30', endTime: '12:00', branch: 'dasan', subject: '화학1', description: '문풀', subjectType: 'chem', book: 'None', teacher: '산하', students: ['김우영 (심화보충)\n(일10:30-12:30)', '방지호 (심화보충)\n(토12-2/일10-1)', '오성균 (심화보충)\n(수3-6/금12-3/토12-2)'] },
+  { id: 'd-69', day: 'sat', startTime: '15:30', endTime: '17:00', branch: 'dasan', subject: '통합', description: '문풀', subjectType: 'integ', book: 'None', teacher: '산하', students: ['양우빈 (심화보충)\n(수4:30-7/토5-6)', '이채운 (심화보충)\n(일11:30-3)', '정민우 (심화보충)\n(일2-5:30)'] },
+  { id: 'd-70', day: 'sun', startTime: '10:30', endTime: '12:00', branch: 'dasan', subject: '물리1', description: '문풀', subjectType: 'phy', book: 'None', teacher: '산하', students: ['조은빈 (심화보충)\n(화10-1/금10-10:30/일10:30-12)'] },
+  { id: 'd-71', day: 'wed', startTime: '13:00', endTime: '14:30', branch: 'dasan', subject: '물리1', description: '8주A', subjectType: 'phy', book: 'A', teacher: '달돌', students: ['박지산 (심화보충)\n(토9-1)'] },
+  { id: 'd-72', day: 'wed', startTime: '14:30', endTime: '16:00', branch: 'dasan', subject: '물리1', description: '8주B', subjectType: 'phy', book: 'B', teacher: '달돌', students: ['박지산 (심화보충)\n(토9-1)'] },
+  { id: 'd-73', day: 'fri', startTime: '09:00', endTime: '10:30', branch: 'dasan', subject: '지구1', description: '8주A', subjectType: 'earth', book: 'A', teacher: '달돌', students: ['박지산 (심화보충)\n(토9-1)'] },
+  { id: 'd-74', day: 'fri', startTime: '10:30', endTime: '12:00', branch: 'dasan', subject: '지구1', description: '8주B', subjectType: 'earth', book: 'B', teacher: '달돌', students: ['박지산 (심화보충)\n(토9-1)'] },
+  { id: 'd-75', day: 'sun', startTime: '10:30', endTime: '12:00', branch: 'dasan', subject: '생명2', description: '8주A', subjectType: 'life', book: 'A', teacher: '지수', students: ['이해성 (심화보충)\n(금6-8/일1:30-3:30)'] },
+  { id: 'd-76', day: 'sun', startTime: '12:00', endTime: '13:30', branch: 'dasan', subject: '생명2', description: '8주B', subjectType: 'life', book: 'B', teacher: '기현', students: ['이해성 (심화보충)\n(금6-8/일1:30-3:30)'] },
+  { id: 'd-77', day: 'mon', startTime: '15:00', endTime: '16:30', branch: 'dasan', subject: '화학1', description: '문풀', subjectType: 'chem', book: 'None', teacher: '달돌', students: ['강승구 (심화보충)'] },
+  { id: 'd-78', day: 'mon', startTime: '16:30', endTime: '18:00', branch: 'dasan', subject: '지구1', description: '문풀', subjectType: 'earth', book: 'None', teacher: '달돌', students: ['강승구 (심화보충)'] },
+  { id: 'd-79', day: 'fri', startTime: '20:00', endTime: '21:30', branch: 'dasan', subject: '지구1', description: '문풀', subjectType: 'earth', book: 'None', teacher: '산하', students: ['박승재 (심화보충)\n(일6:30-8:30)', '이해성 (심화보충)\n(금6-8/일1:30-3:30)', '임서희 (심화보충)\n(금6-8)', '최수인 (심화보충)'] },
+];
+
+// ----------------------------------------------------------------------
+// 4. COMPONENTS
+// ----------------------------------------------------------------------
+
+// [ClassCard Component]
+interface ClassCardProps {
+  session: ClassSession;
+}
+
+// Subject Styles (from ClassCard.tsx)
+const getSubjectStyles = (type: SubjectType) => {
+  switch (type) {
+    case 'phy': return { 
+      bg: 'bg-[#E1F5FE]', border: 'border-[#0288D1]', text: 'text-[#01579B]', 
+      timeBg: 'bg-[#01579B]',
+      pattern: { backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(2,136,209,0.1) 5px, rgba(2,136,209,0.1) 10px)' } 
+    };
+    case 'chem': return { 
+      bg: 'bg-[#FCE4EC]', border: 'border-[#C2185B]', text: 'text-[#880E4F]', 
+      timeBg: 'bg-[#C2185B]',
+      pattern: { backgroundImage: 'radial-gradient(#C2185B 1px, transparent 1px)', backgroundSize: '8px 8px', opacity: 0.3 } 
+    };
+    case 'life': return { 
+      bg: 'bg-[#E8F5E9]', border: 'border-[#2E7D32]', text: 'text-[#1B5E20]', 
+      timeBg: 'bg-[#2E7D32]',
+      pattern: { backgroundImage: 'linear-gradient(rgba(46,125,50,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(46,125,50,0.15) 1px, transparent 1px)', backgroundSize: '12px 12px' }
+    };
+    case 'earth': return { 
+      bg: 'bg-[#FFF3E0]', border: 'border-[#E65100]', text: 'text-[#BF360C]', 
+      timeBg: 'bg-[#E65100]',
+      pattern: { backgroundImage: 'repeating-linear-gradient(-45deg, transparent, transparent 5px, rgba(230,81,0,0.1) 5px, rgba(230,81,0,0.1) 10px)' }
+    };
+    case 'integ': return { 
+      bg: 'bg-[#F3E5F5]', border: 'border-[#7B1FA2]', text: 'text-[#4A148C]', 
+      timeBg: 'bg-[#7B1FA2]',
+      pattern: { backgroundImage: 'radial-gradient(circle, rgba(123,31,162,0.2) 2px, transparent 2.5px)', backgroundSize: '10px 10px' } 
+    };
+    case 'mid': return { 
+      bg: 'bg-[#FFF9C4]', border: 'border-black', text: 'text-black', 
+      timeBg: 'bg-black',
+      pattern: { backgroundImage: 'repeating-linear-gradient(90deg, transparent, transparent 10px, rgba(0,0,0,0.08) 10px, rgba(0,0,0,0.08) 12px)' } 
+    };
+    case 'career': return { 
+      bg: 'bg-[#E8EAF6]', border: 'border-[#1A237E]', text: 'text-[#1A237E]', 
+      timeBg: 'bg-[#1A237E]',
+      pattern: { backgroundImage: 'linear-gradient(135deg, rgba(26,35,126,0.1) 25%, transparent 25%), linear-gradient(225deg, rgba(26,35,126,0.1) 25%, transparent 25%)', backgroundSize: '10px 10px' } 
+    };
+    default: return { bg: 'bg-white', border: 'border-gray-800', text: 'text-gray-900', timeBg: 'bg-gray-800', pattern: {} };
+  }
+};
+
+// Book Styles (from ClassCard.tsx)
+const getBookVisuals = (book: BookType, desc: string) => {
+  if (book === 'A') {
+    return (
+      <div className="flex items-center justify-center w-8 h-8 rounded-full bg-[#D50000] border-[3px] border-white shadow-md text-white font-black text-lg z-10 shrink-0">
+        A
+      </div>
+    );
+  } else if (book === 'B') {
+    return (
+      <div className="flex items-center justify-center w-8 h-8 bg-[#2962FF] border-[3px] border-white shadow-md text-white font-black text-lg z-10 shrink-0 transform rotate-6">
+        B
+      </div>
+    );
+  } else if (desc.includes('문풀')) {
+    return (
+      <div className="flex items-center justify-center px-2 py-1 bg-slate-900 text-white font-black text-sm rounded shadow-md shrink-0 border-2 border-white min-w-max">
+        문풀
+      </div>
+    );
+  } else if (desc.includes('입시')) {
+    return (
+       <div className="flex items-center justify-center px-2 py-1 bg-violet-800 text-white font-black text-sm rounded shadow-md shrink-0 border-2 border-white min-w-max">
+        입시
+      </div>
+    );
+  }
+  return null;
+};
+
+// Teacher Styles (from ClassCard.tsx)
+const getTeacherStyle = (name: string) => {
+  const short = getTeacherShortName(name);
+  const common = "border-2 border-white shadow-md shrink-0"; 
+  if (name.includes('달돌')) return { short, container: `bg-[#304FFE] rounded-full ${common}`, text: 'text-white' };
+  if (name.includes('산하')) return { short, container: `bg-[#00C853] rounded-lg transform rotate-3 ${common}`, text: 'text-white' }; 
+  if (name.includes('지수')) return { short, container: `bg-[#D500F9] rounded-xl ${common}`, text: 'text-white' };
+  if (name.includes('예림')) return { short, container: `bg-[#FF6D00] rounded-[35%] ${common}`, text: 'text-white' };
+  if (name.includes('기현') || name.includes('규현')) return { short, container: `bg-[#0091EA] rounded-tl-xl rounded-br-xl ${common}`, text: 'text-white' };
+  if (name.includes('준영') || name.includes('주영')) return { short, container: `bg-[#6200EA] rounded-t-xl ${common}`, text: 'text-white' };
+  return { short, container: `bg-slate-700 rounded ${common}`, text: 'text-white' };
+};
+
+const ClassCard: React.FC<ClassCardProps> = ({ session }) => {
+  const styles = getSubjectStyles(session.subjectType);
+  const teacherStyle = getTeacherStyle(session.teacher);
+  const isInchang = session.branch === 'inchang';
+  const bookVisual = getBookVisuals(session.book, session.description);
+
+  return (
+    <div 
+      className={`
+        w-full min-h-[200px] h-full
+        flex flex-col
+        ${styles.bg} border-[4px] ${styles.border}
+        rounded-xl
+        shadow-md transition-all
+        overflow-hidden relative
+      `}
+    >
+      {/* Background Pattern */}
+      <div className="absolute inset-0 opacity-100 pointer-events-none" style={styles.pattern}></div>
+
+      {/* Content */}
+      <div className="relative z-10 flex flex-col h-full p-2.5 gap-2">
+        
+        {/* ROW 1: Time Capsule & Branch */}
+        <div className="flex justify-between items-center gap-1">
+           {/* Time Capsule */}
+           <div className={`
+             flex items-center justify-center px-4 py-1.5 rounded-full shadow-md border-2 border-white shrink-0
+             ${styles.timeBg}
+           `}>
+              <span className="text-white text-[16px] font-black leading-none tracking-tight whitespace-nowrap">
+                {session.startTime} ~ {session.endTime}
+              </span>
+           </div>
+
+           {/* Branch Icon - shrink-0 critical to prevent clipping */}
+           <div className="bg-white/95 p-1.5 rounded-full border-2 border-black/10 shadow-md shrink-0">
+              {isInchang 
+                ? <i className="fa-solid fa-clover text-[#00E676] text-2xl drop-shadow-sm stroke-black"></i>
+                : <i className="fa-solid fa-star text-[#FFD600] text-2xl drop-shadow-sm stroke-black"></i>
+              }
+           </div>
+        </div>
+
+        {/* ROW 2: Subject & Book Type */}
+        <div className="flex flex-col items-start gap-1 mt-0 bg-white/80 p-2 rounded-xl backdrop-blur-sm border border-black/5 shadow-sm min-h-min">
+          <div className="shrink-0">{bookVisual}</div>
+          <div className="flex flex-col leading-none w-full">
+             {/* [UPDATE] Added break-all and whitespace-normal to prevent cutoff */}
+             <span className={`text-[24px] font-black tracking-tighter whitespace-normal break-all leading-tight ${styles.text}`}>
+               {session.subject}
+             </span>
+             {session.description && session.book === 'None' && (
+                <span className="text-[14px] font-bold text-slate-600 mt-1 whitespace-normal break-keep">
+                  {session.description}
+                </span>
+             )}
+          </div>
+        </div>
+
+        {/* ROW 3: Student List (Expanded Area) */}
+        {/* [UPDATE] Added overflow-y-auto, min-h, and max-h for scrolling */}
+        <div className="flex-1 bg-white/60 rounded-xl border border-black/5 p-2 overflow-y-auto min-h-[80px] max-h-[300px]">
+           <div className="flex flex-wrap gap-x-1 gap-y-1.5 content-start">
+             {session.students.length > 0 ? (
+               session.students.map((studentStr, idx) => {
+                 // Logic to parse supplement tag
+                 const hasSupplementTag = studentStr.includes('(심화보충)');
+                 const cleanName = studentStr.replace(' (심화보충)', '').split('\n')[0];
+                 const clinic = studentStr.split('\n')[1];
+
+                 return (
+                   <div key={idx} className="flex flex-col items-center justify-center bg-black/5 rounded-md px-1.5 py-0.5 border border-black/5">
+                     {/* [UPDATE] Remove text tag, use Red color for name */}
+                     <span className={`text-[16px] font-bold leading-tight whitespace-nowrap ${hasSupplementTag ? 'text-[#D50000]' : 'text-black'}`}>
+                       {cleanName}
+                     </span>
+                     {clinic && (
+                       <span className="text-[12px] font-bold text-red-600 leading-none whitespace-nowrap mt-0.5">
+                         {clinic}
+                       </span>
+                     )}
+                   </div>
+                 );
+               })
+             ) : (
+               <span className="text-[13px] text-slate-400 font-medium pl-1">-</span>
+             )}
+           </div>
+        </div>
+
+        {/* ROW 4: Teacher Badge (Large Shape) */}
+        <div className="flex-shrink-0 flex justify-end mt-auto pt-1">
+          <div className={`
+            w-12 h-12 flex items-center justify-center shrink-0
+            ${teacherStyle.container}
+          `}>
+             <span className={`text-[24px] font-black ${teacherStyle.text}`}>
+               {teacherStyle.short}
+             </span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+};
+
+// [DayColumn Component]
+interface DayColumnProps {
+  day: DayOfWeek;
+  data: ClassSession[];
+  filterBranch: 'all' | Branch;
+  filterTeacher: string;
+  searchTerm: string;
+}
+
+const DayColumn: React.FC<DayColumnProps> = ({ day, data, filterBranch, filterTeacher, searchTerm }) => {
+  // 1. Filter Data
+  const filteredData = useMemo(() => {
+    return data.filter(d => 
+      d.day === day &&
+      (filterBranch === 'all' || d.branch === filterBranch) &&
+      (filterTeacher === 'all' || d.teacher === filterTeacher) &&
+      (searchTerm === '' || 
+       d.subject.includes(searchTerm) || 
+       d.description.includes(searchTerm) ||
+       d.students.some(s => s.includes(searchTerm)))
+    );
+  }, [day, data, filterBranch, filterTeacher, searchTerm]);
+
+  // 2. Calculate Layout (Positions)
+  const layoutEvents = useMemo(() => calculateLayout(filteredData), [filteredData]);
+
+  // 3. Grid Background Lines
+  const totalHeight = (HOURS.length) * PIXELS_PER_HOUR; // Covers range
+
+  return (
+    <div className="relative w-full h-full min-w-[160px] bg-white border-r-2 border-slate-800">
+      
+      {/* Background Grid Lines */}
+      <div className="absolute inset-0 pointer-events-none z-0">
+        {HOURS.map((hour, index) => (
+          <React.Fragment key={hour}>
+            {/* Hour Line (Solid) */}
+            <div 
+              className="absolute w-full border-t-2 border-slate-300"
+              style={{ top: `${index * PIXELS_PER_HOUR}px` }}
+            ></div>
+            {/* 30-min Line (Dotted) */}
+            <div 
+              className="absolute w-full border-t border-dotted border-slate-300"
+              style={{ top: `${index * PIXELS_PER_HOUR + (PIXELS_PER_HOUR/2)}px` }}
+            ></div>
+          </React.Fragment>
+        ))}
+      </div>
+
+      {/* Events Layer */}
+      <div className="absolute inset-0 z-10 w-full h-full">
+        {layoutEvents.map((event) => (
+          <div
+            key={event.id}
+            className="absolute px-0.5 py-0.5 transition-all hover:z-50 hover:scale-[1.02]"
+            style={{
+              top: `${event.top}px`,
+              height: `${event.height}px`,
+              left: `${event.left}%`,
+              width: `${event.width}%`,
+            }}
+          >
+            <ClassCard session={event} />
+          </div>
+        ))}
+      </div>
+
+      {/* Maintain height */}
+      <div style={{ height: `${totalHeight}px` }}></div>
+    </div>
+  );
+};
+
+// ----------------------------------------------------------------------
+// 5. MAIN APP COMPONENT (from App.tsx)
+// ----------------------------------------------------------------------
+
+const App: React.FC = () => {
+  const [filterBranch, setFilterBranch] = useState<'all' | Branch>('all');
+  const [filterTeacher, setFilterTeacher] = useState<string>('all');
+  const [searchTerm, setSearchTerm] = useState<string>('');
+
+  const teachers = useMemo(() => {
+    const t = new Set(RAW_DATA.map(d => d.teacher));
+    return Array.from(t).sort();
+  }, []);
+
+  const dayHeaders = [
+    { key: 'mon', label: '1/5', sub: '월요일' },
+    { key: 'tue', label: '1/6', sub: '화요일' },
+    { key: 'wed', label: '1/7', sub: '수요일' },
+    { key: 'thu', label: '1/8', sub: '목요일' },
+    { key: 'fri', label: '1/9', sub: '금요일' },
+    { key: 'sat', label: '1/10', sub: '토요일' },
+    { key: 'sun', label: '1/11', sub: '일요일' },
+  ] as const;
+
+  // Render Time Axis (Left) - matching DayColumn grid exactly
+  const TimeAxis = () => (
+    <div className="flex flex-col text-center bg-white border-r-4 border-slate-900 z-30 w-[150px] shrink-0 sticky left-0 shadow-lg">
+      <div className="h-[70px] bg-slate-900 border-b-2 border-slate-800 sticky top-0 z-50"></div> {/* Header spacer */}
+      <div className="relative" style={{ height: `${HOURS.length * PIXELS_PER_HOUR}px` }}>
+        {HOURS.map((h, i) => (
+          <div 
+            key={h} 
+            className="absolute w-full flex flex-col items-center justify-start"
+            style={{ 
+              top: `${i * PIXELS_PER_HOUR}px`, 
+              height: `${PIXELS_PER_HOUR}px` 
+            }}
+          >
+            {/* Hour Label - Larger */}
+            <div className="bg-slate-800 text-white font-black px-4 py-2 rounded-r-xl text-3xl -mt-7 z-10 shadow-md">
+              {h}시
+            </div>
+            {/* 30m Label */}
+            <div className="text-lg font-bold text-slate-500 absolute top-1/2 -mt-3.5 bg-slate-100 px-3 rounded-md border-2 border-slate-300">
+              30분
+            </div>
+            
+            {/* Tick Marks aligned with grid */}
+            <div className="absolute top-0 right-0 w-8 h-2 bg-slate-900"></div>
+            <div className="absolute top-1/2 right-0 w-4 h-1 bg-slate-400"></div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-200 font-sans text-slate-900 print:bg-white">
+      {/* Inject FontAwesome for original icons */}
+      <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+
+      {/* CONTROLS HEADER */}
+      <div className="bg-white border-b-4 border-slate-900 p-6 print:hidden">
+        <div className="max-w-[7000px] mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
+           {/* Logo & Title */}
+           <div className="flex items-center gap-6">
+             <div className="w-24 h-24 bg-blue-600 flex items-center justify-center text-white font-black text-6xl rounded-2xl shadow-lg border-4 border-black transform -rotate-2">
+                <i className="fa-solid fa-calendar-days"></i>
+             </div>
+             <div>
+                <h1 className="text-6xl font-black text-slate-900 tracking-tighter">
+                  2026 겨울방학 특강 통합 시간표
+                </h1>
+                <p className="text-2xl font-bold text-slate-500 tracking-widest mt-2">달돌 과학 학원 (인창/다산)</p>
+             </div>
+           </div>
+
+           {/* Filters */}
+           <div className="flex flex-wrap items-center gap-4">
+              <div className="flex bg-slate-100 p-2 rounded-xl border-2 border-slate-300">
+                <button onClick={() => setFilterBranch('all')} className={`px-6 py-3 text-lg font-black rounded-lg uppercase transition-colors ${filterBranch === 'all' ? 'bg-slate-800 text-white shadow-md' : 'text-slate-500 hover:bg-slate-200'}`}>전체</button>
+                <button onClick={() => setFilterBranch('inchang')} className={`px-6 py-3 text-lg font-black rounded-lg uppercase transition-colors ${filterBranch === 'inchang' ? 'bg-[#16a34a] text-white shadow-md' : 'text-slate-500 hover:bg-slate-200'}`}>인창관</button>
+                <button onClick={() => setFilterBranch('dasan')} className={`px-6 py-3 text-lg font-black rounded-lg uppercase transition-colors ${filterBranch === 'dasan' ? 'bg-[#f59e0b] text-white shadow-md' : 'text-slate-500 hover:bg-slate-200'}`}>다산관</button>
+              </div>
+
+              <select 
+                 className="bg-white border-2 border-slate-300 text-lg font-bold rounded-xl px-5 py-3.5 focus:ring-4 focus:ring-black/20 focus:border-black shadow-sm outline-none"
+                 value={filterTeacher}
+                 onChange={(e) => setFilterTeacher(e.target.value)}
+              >
+                <option value="all">강사 선택 (전체)</option>
+                {teachers.map(t => <option key={t} value={t}>{t} 선생님</option>)}
+              </select>
+
+              <div className="relative">
+                <input 
+                  type="text" 
+                  placeholder="수업/학생 검색..." 
+                  className="pl-5 pr-5 py-3.5 border-2 border-slate-300 rounded-xl text-lg font-bold w-80 focus:ring-4 focus:ring-black/20 focus:border-black focus:outline-none uppercase shadow-inner"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+              </div>
+           </div>
+        </div>
+      </div>
+
+      {/* MAIN TIMETABLE GRID */}
+      <div className="w-full overflow-auto bg-slate-100 pb-20">
+        <div className="flex min-w-[7000px] relative shadow-[0_0_50px_rgba(0,0,0,0.1)] border-b-4 border-slate-900 mx-auto bg-white">
+          
+          {/* Left Axis */}
+          <TimeAxis />
+
+          {/* Day Columns */}
+          <div className="flex-1 flex divide-x-2 divide-slate-800 border-r-4 border-slate-800 bg-white">
+             {dayHeaders.map(day => (
+               <div key={day.key} className="flex-1 min-w-[1000px] flex flex-col">
+                  {/* Column Header */}
+                  <div className={`
+                    sticky top-0 z-[60] h-[70px] 
+                    flex flex-col items-center justify-center
+                    bg-slate-900 border-b-4 border-slate-800
+                    text-white shadow-md
+                    print:static print:border-b
+                  `}>
+                    <div className="flex items-baseline gap-3">
+                      <span className="text-4xl font-black leading-none">{day.sub}</span>
+                      <span className="text-xl font-bold opacity-70 tracking-widest">{day.label}</span>
+                    </div>
+                  </div>
+
+                  {/* Column Content */}
+                  <DayColumn 
+                     day={day.key} 
+                     data={RAW_DATA} 
+                     filterBranch={filterBranch} 
+                     filterTeacher={filterTeacher} 
+                     searchTerm={searchTerm} 
+                  />
+               </div>
+             ))}
+          </div>
+        </div>
+      </div>
+      
+      {/* FOOTER LEGEND */}
+      <div className="bg-white border-t-4 border-slate-900 p-10 print:hidden">
+         <div className="max-w-[7000px] mx-auto flex flex-wrap gap-12 justify-center">
+            
+            <div className="flex gap-6 items-center p-6 bg-slate-50 rounded-2xl border-2 border-slate-200 shadow-md hover:shadow-lg transition-shadow">
+               <span className="font-black text-2xl bg-slate-900 text-white px-5 py-2 transform -skew-x-12 shadow-sm rounded-sm">과목 구분</span>
+               <div className="flex gap-8">
+                 <div className="flex items-center gap-3 text-lg font-bold text-slate-700"><span className="w-10 h-10 bg-[#E1F5FE] border-2 border-[#0288D1] rounded-lg shadow-sm"></span>물리</div>
+                 <div className="flex items-center gap-3 text-lg font-bold text-slate-700"><span className="w-10 h-10 bg-[#FCE4EC] border-2 border-[#C2185B] rounded-lg shadow-sm"></span>화학</div>
+                 <div className="flex items-center gap-3 text-lg font-bold text-slate-700"><span className="w-10 h-10 bg-[#E8F5E9] border-2 border-[#2E7D32] rounded-lg shadow-sm"></span>생명</div>
+                 <div className="flex items-center gap-3 text-lg font-bold text-slate-700"><span className="w-10 h-10 bg-[#FFF3E0] border-2 border-[#E65100] rounded-lg shadow-sm"></span>지학</div>
+                 <div className="flex items-center gap-3 text-lg font-bold text-slate-700"><span className="w-10 h-10 bg-[#F3E5F5] border-2 border-[#7B1FA2] rounded-lg shadow-sm"></span>통합</div>
+               </div>
+            </div>
+
+            <div className="flex gap-6 items-center p-6 bg-slate-50 rounded-2xl border-2 border-slate-200 shadow-md hover:shadow-lg transition-shadow">
+               <span className="font-black text-2xl bg-slate-900 text-white px-5 py-2 transform -skew-x-12 shadow-sm rounded-sm">강의실(관)</span>
+               <div className="flex gap-8">
+                  <div className="flex items-center gap-3 text-lg font-bold text-slate-700"><i className="fa-solid fa-clover text-[#16a34a] text-3xl drop-shadow-sm"></i> 인창관</div>
+                  <div className="flex items-center gap-3 text-lg font-bold text-slate-700"><i className="fa-solid fa-star text-[#f59e0b] text-3xl drop-shadow-sm"></i> 다산관</div>
+               </div>
+            </div>
+
+            {/* [UPDATE] New Legend for Supplement Students */}
+            <div className="flex gap-6 items-center p-6 bg-slate-50 rounded-2xl border-2 border-slate-200 shadow-md hover:shadow-lg transition-shadow">
+               <span className="font-black text-2xl bg-slate-900 text-white px-5 py-2 transform -skew-x-12 shadow-sm rounded-sm">수강생 구분</span>
+               <div className="flex gap-8">
+                  <div className="flex items-center gap-3 text-lg font-bold text-slate-700">
+                    <span className="text-black">검은색 이름</span> : 일반 수강생
+                  </div>
+                  <div className="flex items-center gap-3 text-lg font-bold text-slate-700">
+                    <span className="text-[#D50000]">빨간색 이름</span> : 심화보충 대상
+                  </div>
+               </div>
+            </div>
+
+         </div>
+      </div>
+
+    </div>
+  );
+};
+
+export default App;
